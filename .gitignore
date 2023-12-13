@@ -1,0 +1,5 @@
+*.exe
+matchtx*.json
+pkey.json
+node_modules
+package*.json
