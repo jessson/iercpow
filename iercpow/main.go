@@ -51,6 +51,7 @@ type Worker struct {
 	threads      uint64
 	wg           *sync.WaitGroup
 	w            *Wallet
+	cancel       context.Context
 }
 
 type MatchCount struct {
@@ -58,7 +59,7 @@ type MatchCount struct {
 	nonce uint64
 }
 
-func newWorker(index int, findHashChan chan *types.Transaction, nonce *uint64, start uint64, threads uint64, mintData *MintConfig, w *Wallet, wg *sync.WaitGroup) *Worker {
+func newWorker(index int, findHashChan chan *types.Transaction, nonce *uint64, start uint64, threads uint64, mintData *MintConfig, w *Wallet, wg *sync.WaitGroup, cancel context.Context) *Worker {
 	return &Worker{
 		index:        index,
 		findHashChan: findHashChan,
@@ -69,6 +70,7 @@ func newWorker(index int, findHashChan chan *types.Transaction, nonce *uint64, s
 		wg:           wg,
 		m:            *mintData,
 		w:            w,
+		cancel:       cancel,
 	}
 }
 
@@ -89,6 +91,12 @@ func (w *Worker) startMine() {
 
 	var t uint64 = 0
 	for ; ; t++ {
+		select {
+		case <-w.cancel.Done():
+			w.wg.Done()
+			return
+		default:
+		}
 		start := w.start + w.threads*t*LEN_FOR_THREADS
 		end := start + LEN_FOR_THREADS
 		for nonce := start; nonce < end; nonce++ {
@@ -230,9 +238,10 @@ func main() {
 			}
 
 			wg.Add(mintConfig.Threads)
+			ctx, cancelFunc := context.WithCancel(context.Background())
 			for t := 0; t < mintConfig.Threads; t++ {
 				start := uint64(timestamp) + uint64(t)*LEN_FOR_THREADS
-				worker := newWorker(t, onHashFindChn, &wNonce, start, uint64(mintConfig.Threads), mintConfig, w, &wg)
+				worker := newWorker(t, onHashFindChn, &wNonce, start, uint64(mintConfig.Threads), mintConfig, w, &wg, ctx)
 				go worker.startMine()
 			}
 
@@ -261,6 +270,7 @@ func main() {
 				outfile.Write(jsonData)
 				outfile.Close()
 				fmt.Println("find tx hash:", tx.Hash().Hex())
+				cancelFunc()
 			}
 			wg.Wait()
 		}
