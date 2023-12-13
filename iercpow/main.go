@@ -240,9 +240,11 @@ func main() {
 			case tx := <-onHashFindChn:
 				wNonce++
 				rawTx, _ := w.GetRawTx(tx)
-				err := client.SendTransaction(context.Background(), tx)
-				if err != nil {
-					fmt.Println("Send Transaction failed", err)
+				if mintConfig.SendTx {
+					err := client.SendTransaction(context.Background(), tx)
+					if err != nil {
+						fmt.Println("Send Transaction failed", err)
+					}
 				}
 				matchData := MatchedTx{
 					WalletAddr: w.Address,
