@@ -60,11 +60,11 @@ type MatchCount struct {
 	nonce uint64
 }
 
-func newWorker(index int, findHashChan chan *types.Transaction, nonce *atomic.Uint64, start uint64, threads uint64, mintData *MintConfig, w *Wallet, wg *sync.WaitGroup, cancel context.Context) *Worker {
+func newWorker(index int, findHashChan chan *types.Transaction, imNonce uint64, nonce *atomic.Uint64, start uint64, threads uint64, mintData *MintConfig, w *Wallet, wg *sync.WaitGroup, cancel context.Context) *Worker {
 	return &Worker{
 		index:        index,
 		findHashChan: findHashChan,
-		nonce:        nonce.Load(),
+		nonce:        imNonce,
 		curNonce:     nonce,
 		start:        start,
 		threads:      threads,
@@ -244,9 +244,10 @@ func main() {
 
 			wg.Add(mintConfig.Threads)
 			ctx, cancelFunc := context.WithCancel(context.Background())
+			imNonce := WNonce.Load()
 			for t := 0; t < mintConfig.Threads; t++ {
 				start := uint64(timestamp) + uint64(t)*LEN_FOR_THREADS
-				worker := newWorker(t, onHashFindChn, &WNonce, start, uint64(mintConfig.Threads), mintConfig, w, &wg, ctx)
+				worker := newWorker(t, onHashFindChn, imNonce, &WNonce, start, uint64(mintConfig.Threads), mintConfig, w, &wg, ctx)
 				go worker.startMine()
 			}
 
