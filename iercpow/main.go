@@ -21,6 +21,7 @@ var (
 	LEN_FOR_THREADS uint64 = 100000
 	GlobalCount     atomic.Uint64
 	LastCount       uint64 = 0
+	WNonce          atomic.Uint64
 )
 
 type MatchedTx struct {
@@ -46,11 +47,12 @@ type Worker struct {
 	m            MintConfig
 	findHashChan chan *types.Transaction
 	nonce        uint64
-	curNonce     *uint64
+	curNonce     *atomic.Uint64
 	start        uint64
 	threads      uint64
 	wg           *sync.WaitGroup
 	w            *Wallet
+	cancel       context.Context
 }
 
 type MatchCount struct {
@@ -58,17 +60,18 @@ type MatchCount struct {
 	nonce uint64
 }
 
-func newWorker(index int, findHashChan chan *types.Transaction, nonce *uint64, start uint64, threads uint64, mintData *MintConfig, w *Wallet, wg *sync.WaitGroup) *Worker {
+func newWorker(index int, findHashChan chan *types.Transaction, imNonce uint64, nonce *atomic.Uint64, start uint64, threads uint64, mintData *MintConfig, w *Wallet, wg *sync.WaitGroup, cancel context.Context) *Worker {
 	return &Worker{
 		index:        index,
 		findHashChan: findHashChan,
-		nonce:        *nonce,
+		nonce:        imNonce,
 		curNonce:     nonce,
 		start:        start,
 		threads:      threads,
 		wg:           wg,
 		m:            *mintData,
 		w:            w,
+		cancel:       cancel,
 	}
 }
 
@@ -92,6 +95,13 @@ func (w *Worker) startMine() {
 		start := w.start + w.threads*t*LEN_FOR_THREADS
 		end := start + LEN_FOR_THREADS
 		for nonce := start; nonce < end; nonce++ {
+			select {
+			case <-w.cancel.Done():
+				fmt.Println("work", w.index, "exited")
+				w.wg.Done()
+				return
+			default:
+			}
 			GlobalCount.Add(1)
 			inputStr := fmt.Sprintf("%s\"nonce\":\"%d\"}", fixedStr, nonce)
 			innerTx.Data = []byte(inputStr)
@@ -100,6 +110,7 @@ func (w *Worker) startMine() {
 			if err != nil {
 				panic(err)
 			}
+			//fmt.Println("hash:", signTx.Hash().String())
 			if strings.HasPrefix(signTx.Hash().String(), w.m.HashPre) {
 				fmt.Println("find matched hash", signTx.Hash().Hex(), "exit", w.index)
 				w.findHashChan <- signTx
@@ -107,7 +118,7 @@ func (w *Worker) startMine() {
 				return
 			}
 
-			if w.nonce != *w.curNonce {
+			if w.nonce != w.curNonce.Load() {
 				fmt.Println("exit find hash", w.index)
 				w.wg.Done()
 				return
@@ -214,6 +225,7 @@ func main() {
 	var wg sync.WaitGroup
 	for _, w := range wallets {
 		wNonce, err := w.GetPendingNonce()
+		WNonce.Store(wNonce)
 		if err != nil {
 			fmt.Println("Wallet", w.Address, "get nonce error")
 			continue
@@ -224,26 +236,29 @@ func main() {
 			onHashFindChn := make(chan *types.Transaction)
 			if mc, ok := matchedCount[w.Address.String()]; ok {
 				if mc.count >= i {
-					wNonce = mc.nonce + 1
+					//wNonce = mc.nonce + 1
+					WNonce.Store(mc.nonce + 1)
 					continue
 				}
 			}
 
 			wg.Add(mintConfig.Threads)
+			ctx, cancelFunc := context.WithCancel(context.Background())
+			imNonce := WNonce.Load()
 			for t := 0; t < mintConfig.Threads; t++ {
 				start := uint64(timestamp) + uint64(t)*LEN_FOR_THREADS
-				worker := newWorker(t, onHashFindChn, &wNonce, start, uint64(mintConfig.Threads), mintConfig, w, &wg)
+				worker := newWorker(t, onHashFindChn, imNonce, &WNonce, start, uint64(mintConfig.Threads), mintConfig, w, &wg, ctx)
 				go worker.startMine()
 			}
 
 			select {
 			case tx := <-onHashFindChn:
-				wNonce++
+				WNonce.Add(1)
 				rawTx, _ := w.GetRawTx(tx)
 				if mintConfig.SendTx {
 					err := client.SendTransaction(context.Background(), tx)
 					if err != nil {
-						fmt.Println("Send Transaction failed", err)
+						fmt.Println("send transaction failed:", err)
 					}
 				}
 				matchData := MatchedTx{
@@ -258,9 +273,10 @@ func main() {
 				if err != nil {
 					fmt.Println("Marshal json error", err)
 				}
-				outfile.Write(jsonData)
-				outfile.Close()
+				_, _ = outfile.Write(jsonData)
+				_ = outfile.Close()
 				fmt.Println("find tx hash:", tx.Hash().Hex())
+				cancelFunc()
 			}
 			wg.Wait()
 		}
